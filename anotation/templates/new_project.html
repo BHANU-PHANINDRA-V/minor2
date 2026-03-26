@@ -5,8 +5,9 @@
 
 {% block content %}
 <section class="split-panel">
-    <form method="post" class="form-card wide">
+    <form method="post" action="{% url 'new_project' %}" class="form-card wide">
         {% csrf_token %}
+        <p class="muted">Set up a clear project title and define the class labels your team will use while annotating images.</p>
         <label>
             Project title
             <input type="text" name="title" placeholder="Example: Retail Shelf Detection" required>
