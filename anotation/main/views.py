@@ -15,6 +15,7 @@ from .models import BoundingBox, Project, ProjectClass, ProjectImage
 
 
 def _project_for_user(user, project_id):
+    # Find one project that belongs to the logged-in user.
     return get_object_or_404(
         Project.objects.prefetch_related("classes", "images__boxes__project_class"),
         id=project_id,
@@ -23,6 +24,7 @@ def _project_for_user(user, project_id):
 
 
 def _project_payload(project):
+    # Convert project data into a simple dictionary for JavaScript.
     return {
         "id": project.id,
         "title": project.title,
@@ -62,12 +64,15 @@ def _project_payload(project):
 
 
 def home(request):
+    # If user is already logged in, go to dashboard.
+    # Otherwise send user to login page.
     if request.user.is_authenticated:
         return redirect("dashboard")
     return redirect("login")
 
 
 def signup_view(request):
+    # Show signup page and create a new user on POST.
     if request.user.is_authenticated:
         return redirect("dashboard")
 
@@ -96,6 +101,7 @@ def signup_view(request):
 
 
 def login_view(request):
+    # Show login page and authenticate user on POST.
     if request.user.is_authenticated:
         return redirect("dashboard")
 
@@ -114,12 +120,14 @@ def login_view(request):
 
 @login_required
 def logout_view(request):
+    # Log out current user and return to login page.
     logout(request)
     return redirect("login")
 
 
 @login_required
 def dashboard_view(request):
+    # Show all projects created by the current user.
     projects = (
         Project.objects.filter(owner=request.user)
         .prefetch_related("classes", "images")
@@ -131,6 +139,7 @@ def dashboard_view(request):
 @login_required
 @transaction.atomic
 def new_project_view(request):
+    # Show create-project page and save a project with its class list on POST.
     if request.method == "POST":
         title = request.POST.get("title", "").strip()
         raw_classes = request.POST.get("classes", "")
@@ -160,6 +169,7 @@ def new_project_view(request):
 
 @login_required
 def annotation_view(request, project_id):
+    # Open annotation page for one project.
     project = _project_for_user(request.user, project_id)
     project_payload = _project_payload(project)
     return render(
@@ -175,6 +185,7 @@ def annotation_view(request, project_id):
 @login_required
 @require_POST
 def upload_images_view(request, project_id):
+    # Upload one or more images for a project.
     project = _project_for_user(request.user, project_id)
     files = request.FILES.getlist("images")
     if not files:
@@ -218,6 +229,7 @@ def upload_images_view(request, project_id):
 @require_POST
 @transaction.atomic
 def save_annotations_view(request, project_id, image_id):
+    # Save all boxes for one image.
     project = _project_for_user(request.user, project_id)
     image = get_object_or_404(ProjectImage, id=image_id, project=project)
 
@@ -259,6 +271,7 @@ def save_annotations_view(request, project_id, image_id):
 @login_required
 @require_GET
 def export_annotations_csv_view(request, project_id):
+    # Download annotations.csv for a project.
     project = _project_for_user(request.user, project_id)
     response = HttpResponse(content_type="text/csv")
     response["Content-Disposition"] = (
@@ -280,11 +293,12 @@ def export_annotations_csv_view(request, project_id):
 
     images = project.images.prefetch_related("boxes__project_class").all()
     for image in images:
+        total_objects_in_image = image.boxes.count()
         for box in image.boxes.all():
             writer.writerow(
                 [
                     image.original_name,
-                    box.object_index,
+                    total_objects_in_image,
                     box.x_min,
                     box.y_min,
                     box.width,
@@ -299,13 +313,21 @@ def export_annotations_csv_view(request, project_id):
 @login_required
 @require_GET
 def export_classes_view(request, project_id):
+    # Download classes.txt using only classes that were actually used.
     project = _project_for_user(request.user, project_id)
     response = HttpResponse(content_type="text/plain")
     response["Content-Disposition"] = (
         f'attachment; filename="{project.title.lower().replace(" ", "_")}_classes.txt"'
     )
 
-    for project_class in project.classes.all():
+    used_class_ids = (
+        BoundingBox.objects.filter(image__project=project)
+        .values_list("project_class_id", flat=True)
+        .distinct()
+    )
+    used_classes = project.classes.filter(id__in=used_class_ids).order_by("class_index")
+
+    for project_class in used_classes:
         response.write(f"{project_class.class_index} {project_class.name}\n")
 
     return response
@@ -314,5 +336,6 @@ def export_classes_view(request, project_id):
 @login_required
 @require_GET
 def project_data_view(request, project_id):
+    # Send project data as JSON for the annotation page JavaScript.
     project = _project_for_user(request.user, project_id)
     return JsonResponse(_project_payload(project))
