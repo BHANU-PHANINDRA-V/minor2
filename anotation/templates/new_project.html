@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}New Project | Data Annotation System{% endblock %}
+{% block page_title %}Create Project{% endblock %}
+
+{% block content %}
+<section class="split-panel">
+    <form method="post" class="form-card wide">
+        {% csrf_token %}
+        <label>
+            Project title
+            <input type="text" name="title" placeholder="Example: Retail Shelf Detection" required>
+        </label>
+        <label>
+            List of classes
+            <textarea name="classes" rows="10" placeholder="Enter one class per line or separate by commas.&#10;Example:&#10;person&#10;car&#10;traffic light" required></textarea>
+        </label>
+        <button type="submit" class="button">Create Project</button>
+    </form>
+
+    <div class="info-panel">
+        <p class="eyebrow">Before annotation</p>
+        <h2>Define the labels once, then reuse them across the full project.</h2>
+        <p>Your class list becomes the source of truth for both the annotation canvas and the exported `classes.txt` file. Class IDs are assigned automatically from `0` onward.</p>
+    </div>
+</section>
+{% endblock %}

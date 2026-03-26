@@ -1,0 +1,617 @@
+{% extends "base.html" %}
+
+{% block title %}Annotate | {{ project.title }}{% endblock %}
+{% block page_title %}{{ project.title }}{% endblock %}
+
+{% block content %}
+<section class="annotation-layout">
+    <aside class="annotation-sidebar">
+        <div class="panel">
+            <p class="eyebrow">Project tools</p>
+            <h2>Upload dataset images</h2>
+            <form id="upload-form" class="upload-form">
+                {% csrf_token %}
+                <div class="upload-picker-group">
+                    <label class="upload-picker">
+                        <span>Choose Folder</span>
+                        <input id="folder-input" type="file" name="images" accept="image/*" multiple webkitdirectory directory>
+                    </label>
+                    <label class="upload-picker">
+                        <span>Choose Images</span>
+                        <input id="file-input" type="file" name="images" accept="image/*" multiple>
+                    </label>
+                </div>
+                <div id="upload-dropzone" class="upload-dropzone">
+                    <strong>Drop a folder's images here</strong>
+                    <p>Folder upload works best in Chrome or Edge. If your browser blocks folders, use "Choose Images" instead.</p>
+                </div>
+                <div id="upload-status" class="muted">No files selected yet.</div>
+                <button type="submit" class="button">Upload Selected Images</button>
+            </form>
+        </div>
+
+        <div class="panel">
+            <div class="panel-row">
+                <h3>Image Queue</h3>
+                <span id="image-count" class="pill">0 images</span>
+            </div>
+            <div id="image-list" class="image-list"></div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-row">
+                <h3>Project Classes</h3>
+                <span class="pill">{{ project.classes.count }} labels</span>
+            </div>
+            <ul class="class-list">
+                {% for item in project.classes.all %}
+                    <li>{{ item.class_index }} - {{ item.name }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </aside>
+
+    <section class="annotation-main">
+        <div class="panel toolbar">
+            <div>
+                <p class="eyebrow">Interactive annotation canvas</p>
+                <h2 id="active-image-title">Select an image</h2>
+                <p class="muted">Draw as many bounding boxes as you need on one image, then switch to another image and continue.</p>
+            </div>
+            <div class="toolbar-actions">
+                <label>
+                    Class
+                    <select id="class-select"></select>
+                </label>
+                <button id="clear-boxes" type="button" class="button button-ghost">Clear Boxes</button>
+                <button id="save-boxes" type="button" class="button">Save Annotations</button>
+                <button id="save-all-boxes" type="button" class="button button-ghost">Save All Images</button>
+            </div>
+        </div>
+
+        <div class="panel canvas-panel">
+            <div id="canvas-stage" class="canvas-stage">
+                <img id="annotation-image" alt="Annotation target">
+                <canvas id="annotation-canvas"></canvas>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-row">
+                <h3>Bounding Boxes</h3>
+                <span id="box-count" class="pill">0 boxes</span>
+            </div>
+            <div id="box-list" class="box-list"></div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-row">
+                <h3>Project Bounding Boxes By Class</h3>
+                <span id="project-box-count" class="pill">0 total</span>
+            </div>
+            <div id="project-box-groups" class="box-groups"></div>
+        </div>
+
+        <div class="panel export-panel">
+            <div>
+                <p class="eyebrow">Exports</p>
+                <h3>Download project outputs</h3>
+            </div>
+            <div class="toolbar-actions">
+                <a class="button button-ghost" href="{% url 'export_classes' project.id %}">Download classes.txt</a>
+                <a class="button" href="{% url 'export_annotations_csv' project.id %}">Download annotations.csv</a>
+            </div>
+        </div>
+    </section>
+</section>
+
+{{ project_json|json_script:"project-data" }}
+
+<script>
+const projectData = JSON.parse(document.getElementById("project-data").textContent);
+const imageList = document.getElementById("image-list");
+const imageCount = document.getElementById("image-count");
+const boxCount = document.getElementById("box-count");
+const boxList = document.getElementById("box-list");
+const projectBoxCount = document.getElementById("project-box-count");
+const projectBoxGroups = document.getElementById("project-box-groups");
+const classSelect = document.getElementById("class-select");
+const activeImageTitle = document.getElementById("active-image-title");
+const canvas = document.getElementById("annotation-canvas");
+const ctx = canvas.getContext("2d");
+const imageElement = document.getElementById("annotation-image");
+const stage = document.getElementById("canvas-stage");
+const uploadForm = document.getElementById("upload-form");
+const folderInput = document.getElementById("folder-input");
+const fileInput = document.getElementById("file-input");
+const uploadDropzone = document.getElementById("upload-dropzone");
+const uploadStatus = document.getElementById("upload-status");
+const saveButton = document.getElementById("save-boxes");
+const saveAllButton = document.getElementById("save-all-boxes");
+const clearButton = document.getElementById("clear-boxes");
+const csrfToken = document.querySelector("[name=csrfmiddlewaretoken]").value;
+
+let activeImageId = projectData.images.length ? projectData.images[0].id : null;
+let drawing = false;
+let startPoint = null;
+let draftBox = null;
+let pendingUploadFiles = [];
+
+function currentImage() {
+    return projectData.images.find((item) => item.id === activeImageId) || null;
+}
+
+function setPendingUploadFiles(files) {
+    pendingUploadFiles = Array.from(files).filter((file) => file.type.startsWith("image/") || /\.(jpg|jpeg|png|bmp|gif|webp)$/i.test(file.name));
+    if (!pendingUploadFiles.length) {
+        uploadStatus.textContent = "No valid image files selected yet.";
+        return;
+    }
+
+    uploadStatus.textContent = `${pendingUploadFiles.length} image file(s) ready to upload.`;
+}
+
+function syncClassOptions() {
+    classSelect.innerHTML = "";
+    projectData.classes.forEach((item) => {
+        const option = document.createElement("option");
+        option.value = item.id;
+        option.textContent = `${item.class_index} - ${item.name}`;
+        classSelect.appendChild(option);
+    });
+}
+
+function updateCounters() {
+    imageCount.textContent = `${projectData.images.length} images`;
+    const image = currentImage();
+    boxCount.textContent = `${image ? image.boxes.length : 0} boxes`;
+    const totalBoxes = projectData.images.reduce((sum, item) => sum + item.boxes.length, 0);
+    projectBoxCount.textContent = `${totalBoxes} total`;
+}
+
+function renderImageList() {
+    imageList.innerHTML = "";
+    projectData.images.forEach((item) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `image-item ${item.id === activeImageId ? "active" : ""}`;
+        button.draggable = true;
+        button.innerHTML = `<strong>${item.name}</strong><span>${item.boxes.length} boxes</span>`;
+        button.addEventListener("click", () => {
+            activeImageId = item.id;
+            renderWorkspace();
+        });
+        button.addEventListener("dragstart", (event) => {
+            event.dataTransfer.setData("text/plain", String(item.id));
+        });
+        imageList.appendChild(button);
+    });
+}
+
+function renderBoxList() {
+    const image = currentImage();
+    boxList.innerHTML = "";
+
+    if (!image) {
+        boxList.innerHTML = "<p class='muted'>Upload and select an image to begin annotation.</p>";
+        return;
+    }
+
+    if (!image.boxes.length) {
+        boxList.innerHTML = "<p class='muted'>No boxes saved for this image yet.</p>";
+        return;
+    }
+
+    image.boxes.forEach((box, index) => {
+        const card = document.createElement("div");
+        card.className = "box-card";
+        card.innerHTML = `
+            <div>
+                <strong>${index + 1}. ${box.class_name}</strong>
+                <p>x:${Math.round(box.x_min)}, y:${Math.round(box.y_min)}, w:${Math.round(box.width)}, h:${Math.round(box.height)}</p>
+            </div>
+            <button type="button" class="danger-link">Delete</button>
+        `;
+        card.querySelector("button").addEventListener("click", () => {
+            image.boxes.splice(index, 1);
+            redrawCanvas();
+            renderBoxList();
+            updateCounters();
+            renderImageList();
+        });
+        boxList.appendChild(card);
+    });
+}
+
+function renderProjectBoxGroups() {
+    projectBoxGroups.innerHTML = "";
+
+    const grouped = new Map();
+    projectData.images.forEach((image) => {
+        image.boxes.forEach((box, index) => {
+            const key = box.class_name;
+            if (!grouped.has(key)) {
+                grouped.set(key, []);
+            }
+            grouped.get(key).push({
+                imageId: image.id,
+                imageName: image.name,
+                index,
+                box,
+            });
+        });
+    });
+
+    if (!grouped.size) {
+        projectBoxGroups.innerHTML = "<p class='muted'>No project-wide bounding boxes yet.</p>";
+        return;
+    }
+
+    Array.from(grouped.entries())
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .forEach(([className, entries]) => {
+            const group = document.createElement("div");
+            group.className = "box-group";
+
+            const header = document.createElement("div");
+            header.className = "box-group-header";
+            header.innerHTML = `<strong>${className}</strong><span class="pill">${entries.length} boxes</span>`;
+            group.appendChild(header);
+
+            entries.forEach((entry, position) => {
+                const row = document.createElement("div");
+                row.className = "box-group-item";
+                row.innerHTML = `
+                    <div>
+                        <strong>${position + 1}. ${entry.imageName}</strong>
+                        <p>x:${Math.round(entry.box.x_min)}, y:${Math.round(entry.box.y_min)}, w:${Math.round(entry.box.width)}, h:${Math.round(entry.box.height)}</p>
+                    </div>
+                    <button type="button" class="button button-ghost">Open</button>
+                `;
+                row.querySelector("button").addEventListener("click", () => {
+                    activeImageId = entry.imageId;
+                    renderWorkspace();
+                });
+                group.appendChild(row);
+            });
+
+            projectBoxGroups.appendChild(group);
+        });
+}
+
+function fitCanvasToImage() {
+    const width = imageElement.clientWidth;
+    const height = imageElement.clientHeight;
+    canvas.width = width;
+    canvas.height = height;
+}
+
+function imageScale() {
+    const image = currentImage();
+    if (!image || !imageElement.naturalWidth || !imageElement.naturalHeight) {
+        return { x: 1, y: 1 };
+    }
+    return {
+        x: imageElement.naturalWidth / canvas.width,
+        y: imageElement.naturalHeight / canvas.height,
+    };
+}
+
+function drawSingleBox(box, color = "#f97316") {
+    const scale = imageScale();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.fillStyle = "rgba(249, 115, 22, 0.16)";
+
+    const x = box.x_min / scale.x;
+    const y = box.y_min / scale.y;
+    const width = box.width / scale.x;
+    const height = box.height / scale.y;
+
+    ctx.strokeRect(x, y, width, height);
+    ctx.fillRect(x, y, width, height);
+    ctx.fillStyle = "#111827";
+    ctx.font = "14px sans-serif";
+    ctx.fillText(box.class_name, x + 6, Math.max(18, y + 18));
+}
+
+function redrawCanvas() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const image = currentImage();
+    if (!image) {
+        return;
+    }
+
+    image.boxes.forEach((box) => drawSingleBox(box));
+    if (draftBox) {
+        drawSingleBox(draftBox, "#0f766e");
+    }
+}
+
+function renderWorkspace() {
+    renderImageList();
+    updateCounters();
+    renderBoxList();
+    renderProjectBoxGroups();
+
+    const image = currentImage();
+    if (!image) {
+        activeImageTitle.textContent = "Select an image";
+        imageElement.removeAttribute("src");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        return;
+    }
+
+    activeImageTitle.textContent = image.name;
+    imageElement.src = image.url;
+    imageElement.onload = () => {
+        fitCanvasToImage();
+        redrawCanvas();
+    };
+}
+
+function stagePoint(event) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+    };
+}
+
+function finishDraftBox() {
+    if (!drawing) {
+        return;
+    }
+
+    if (draftBox && currentImage() && draftBox.width > 5 && draftBox.height > 5) {
+        currentImage().boxes.push({
+            ...draftBox,
+            object_index: currentImage().boxes.length + 1,
+        });
+    }
+
+    drawing = false;
+    startPoint = null;
+    draftBox = null;
+    redrawCanvas();
+    renderBoxList();
+    updateCounters();
+    renderImageList();
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+    if (!currentImage()) {
+        return;
+    }
+    if (event.button !== 0) {
+        return;
+    }
+    drawing = true;
+    startPoint = stagePoint(event);
+    canvas.setPointerCapture(event.pointerId);
+});
+
+stage.addEventListener("dragover", (event) => {
+    if (drawing) {
+        return;
+    }
+    event.preventDefault();
+    stage.classList.add("drag-over");
+});
+
+stage.addEventListener("dragleave", () => {
+    stage.classList.remove("drag-over");
+});
+
+stage.addEventListener("drop", (event) => {
+    event.preventDefault();
+    stage.classList.remove("drag-over");
+    const imageId = Number(event.dataTransfer.getData("text/plain"));
+    if (!imageId) {
+        return;
+    }
+    activeImageId = imageId;
+    renderWorkspace();
+});
+
+uploadDropzone.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    uploadDropzone.classList.add("drag-active");
+});
+
+uploadDropzone.addEventListener("dragleave", () => {
+    uploadDropzone.classList.remove("drag-active");
+});
+
+uploadDropzone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    uploadDropzone.classList.remove("drag-active");
+    if (event.dataTransfer.files.length) {
+        setPendingUploadFiles(event.dataTransfer.files);
+    }
+});
+
+canvas.addEventListener("pointermove", (event) => {
+    if (!drawing || !startPoint) {
+        return;
+    }
+
+    const point = stagePoint(event);
+    const scale = imageScale();
+    const selectedClass = projectData.classes.find((item) => item.id === Number(classSelect.value));
+    if (!selectedClass) {
+        return;
+    }
+
+    draftBox = {
+        class_id: selectedClass.id,
+        class_name: selectedClass.name,
+        class_index: selectedClass.class_index,
+        box_name: selectedClass.name,
+        x_min: Math.min(startPoint.x, point.x) * scale.x,
+        y_min: Math.min(startPoint.y, point.y) * scale.y,
+        width: Math.abs(point.x - startPoint.x) * scale.x,
+        height: Math.abs(point.y - startPoint.y) * scale.y,
+    };
+    redrawCanvas();
+});
+
+canvas.addEventListener("pointerup", (event) => {
+    if (drawing) {
+        canvas.releasePointerCapture(event.pointerId);
+    }
+    finishDraftBox();
+});
+
+canvas.addEventListener("pointercancel", () => {
+    drawing = false;
+    startPoint = null;
+    draftBox = null;
+    redrawCanvas();
+});
+
+clearButton.addEventListener("click", () => {
+    const image = currentImage();
+    if (!image) {
+        return;
+    }
+    image.boxes = [];
+    redrawCanvas();
+    renderBoxList();
+    updateCounters();
+    renderImageList();
+});
+
+async function saveImageAnnotations(image) {
+    const response = await fetch(`/projects/${projectData.id}/images/${image.id}/save/`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "X-CSRFToken": csrfToken,
+        },
+        body: JSON.stringify({
+            boxes: image.boxes,
+        }),
+    });
+
+    const payload = await response.json();
+    return { ok: response.ok, payload };
+}
+
+saveButton.addEventListener("click", async () => {
+    const image = currentImage();
+    if (!image) {
+        alert("Select an image first.");
+        return;
+    }
+
+    const result = await saveImageAnnotations(image);
+    if (!result.ok) {
+        alert(result.payload.error || "Could not save annotations.");
+        return;
+    }
+
+    alert("Annotations saved successfully.");
+    renderImageList();
+    updateCounters();
+});
+
+saveAllButton.addEventListener("click", async () => {
+    const imagesWithBoxes = projectData.images.filter((image) => image.boxes.length);
+    if (!imagesWithBoxes.length) {
+        alert("There are no bounding boxes to save yet.");
+        return;
+    }
+
+    saveAllButton.disabled = true;
+    saveAllButton.textContent = "Saving...";
+
+    for (const image of imagesWithBoxes) {
+        const result = await saveImageAnnotations(image);
+        if (!result.ok) {
+            saveAllButton.disabled = false;
+            saveAllButton.textContent = "Save All Images";
+            alert(`Could not save annotations for ${image.name}.`);
+            return;
+        }
+    }
+
+    saveAllButton.disabled = false;
+    saveAllButton.textContent = "Save All Images";
+    alert("All image annotations saved successfully.");
+    renderImageList();
+    updateCounters();
+});
+
+uploadForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!pendingUploadFiles.length) {
+        alert("Choose a folder or select images first.");
+        return;
+    }
+
+    const formData = new FormData();
+    pendingUploadFiles.forEach((file) => formData.append("images", file));
+
+    const response = await fetch(`/projects/${projectData.id}/upload/`, {
+        method: "POST",
+        headers: {
+            "X-CSRFToken": csrfToken,
+        },
+        body: formData,
+    });
+    const payload = await response.json();
+
+    if (!response.ok) {
+        alert(payload.error || "Upload failed.");
+        return;
+    }
+
+    payload.images.forEach((item) => {
+        const existingIndex = projectData.images.findIndex((image) => image.id === item.id);
+        if (existingIndex >= 0) {
+            projectData.images[existingIndex] = item;
+        } else {
+            projectData.images.push(item);
+        }
+    });
+
+    if (!activeImageId && projectData.images.length) {
+        activeImageId = projectData.images[0].id;
+    }
+
+    pendingUploadFiles = [];
+    folderInput.value = "";
+    fileInput.value = "";
+    uploadStatus.textContent = "Upload complete.";
+    renderWorkspace();
+});
+
+folderInput.addEventListener("change", (event) => {
+    setPendingUploadFiles(event.target.files);
+});
+
+fileInput.addEventListener("change", (event) => {
+    setPendingUploadFiles(event.target.files);
+});
+
+window.addEventListener("resize", () => {
+    if (currentImage()) {
+        fitCanvasToImage();
+        redrawCanvas();
+    }
+});
+
+window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+        drawing = false;
+        startPoint = null;
+        draftBox = null;
+        redrawCanvas();
+    }
+});
+
+syncClassOptions();
+renderWorkspace();
+</script>
+{% endblock %}

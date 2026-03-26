@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Login | Data Annotation System{% endblock %}
+{% block page_title %}Secure Access{% endblock %}
+
+{% block content %}
+<section class="auth-card">
+    <div class="auth-copy">
+        <p class="eyebrow">Welcome back</p>
+        <h2>Login to manage your annotation projects.</h2>
+        <p>Use your account to create projects, upload images, draw bounding boxes, and export annotation files.</p>
+    </div>
+
+    <form method="post" class="form-card">
+        {% csrf_token %}
+        <label>
+            Username
+            <input type="text" name="username" placeholder="Enter username" required>
+        </label>
+        <label>
+            Password
+            <input type="password" name="password" placeholder="Enter password" required>
+        </label>
+        <button type="submit" class="button">Login</button>
+        <p class="form-footnote">New here? <a href="{% url 'signup' %}">Create an account</a></p>
+    </form>
+</section>
+{% endblock %}

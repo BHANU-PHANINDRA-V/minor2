@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard | Data Annotation System{% endblock %}
+{% block page_title %}Project Dashboard{% endblock %}
+
+{% block content %}
+<section class="dashboard-actions">
+    <div>
+        <p class="eyebrow">Project management</p>
+        <h2>Create and continue annotation work.</h2>
+    </div>
+    <a href="{% url 'new_project' %}" class="button">Create New Project</a>
+</section>
+
+<section class="project-grid">
+    {% for project in projects %}
+        <article class="project-card">
+            <div class="project-card-header">
+                <h3>{{ project.title }}</h3>
+                <span class="pill">{{ project.images.count }} images</span>
+            </div>
+            <p class="muted">Classes:
+                {% for item in project.classes.all %}
+                    {{ item.name }}{% if not forloop.last %}, {% endif %}
+                {% empty %}
+                    No classes yet
+                {% endfor %}
+            </p>
+            <p class="muted">Created on {{ project.created_at|date:"M d, Y" }}</p>
+            <a href="{% url 'annotation' project.id %}" class="button button-ghost">Open Annotation Workspace</a>
+        </article>
+    {% empty %}
+        <div class="empty-state">
+            <h3>No projects yet</h3>
+            <p>Create your first project to start uploading images and annotating objects.</p>
+        </div>
+    {% endfor %}
+</section>
+{% endblock %}
